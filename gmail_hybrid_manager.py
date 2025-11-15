@@ -13,6 +13,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
+from core import logger
 
 # Make core/plugins package importable
 ROOT = Path(__file__).parent
@@ -154,7 +155,30 @@ class GmailHybridApp(tk.Tk):
         ttk.Label(left, text="Log:", background="#2b2b2b", foreground="#EEEEEE").pack(anchor="w", pady=(4, 0))
         self.log_box = scrolledtext.ScrolledText(left, height=18, bg="#3c3f41", fg="#FFFFFF",
                                                  insertbackground="#FFFFFF", relief="flat")
+        
+
         self.log_box.pack(fill=tk.BOTH, expand=True, pady=4)
+        # Define color tags for log highlighting
+        self.log_box.tag_config("error", foreground="#FF5555")
+        self.log_box.tag_config("warn", foreground="#FFB86C")
+        self.log_box.tag_config("plugin", foreground="#8BE9FD")
+        self.log_box.tag_config("session", foreground="#50FA7B")
+        self.log_box.tag_config("input", foreground="#BD93F9")
+        self.log_box.tag_config("batch", foreground="#F1FA8C")
+
+        # Add small "Open Logs Folder" button
+        open_logs_btn = tk.Button(
+            left,
+            text="Open Logs Folder",
+            command=self._open_logs_folder,
+            bg="#3c3f41",
+            fg="#FFFFFF",
+            relief="flat",
+            padx=10,
+            pady=2
+        )
+        open_logs_btn.pack(anchor="w", pady=(4, 0))
+
 
         # Sort and position plugins
         api_plugins = [p for p in self.plugins if p.group == "api"]
@@ -168,6 +192,19 @@ class GmailHybridApp(tk.Tk):
         for p in api_plugins + chrome_plugins:
             target_box = chrome_group if p.group == "chrome" else api_group
             self._add_plugin_row(p, target_box)
+            
+            
+    def _open_logs_folder(self):
+        """Open the logs directory in Windows Explorer."""
+        import os
+        from pathlib import Path
+        logs_dir = Path(__file__).resolve().parent / "logs"
+        logs_dir.mkdir(exist_ok=True)
+        try:
+            os.startfile(logs_dir)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open logs folder:\n{e}")
+
 
     def _add_plugin_row(self, plugin, parent_box):
         """Add a plugin to the appropriate section (API or Chrome)."""
@@ -265,16 +302,45 @@ class GmailHybridApp(tk.Tk):
         self.btn_clear_accounts.pack_forget()
 
     def _log_console(self, msg): print(msg)
+    
     def log(self, msg):
-        self.log_box.insert(tk.END, msg + "\n")
+        # Normalize to exactly one newline at the end
+        msg = msg.rstrip("\r\n") + "\n"
+
+        # Apply tag-based coloring
+        tag = None
+        if "[ERROR]" in msg:
+            tag = "error"
+        elif "[WARN]" in msg or "[WARNING]" in msg:
+            tag = "warn"
+        elif "[PLUGIN]" in msg:
+            tag = "plugin"
+        elif "[SESSION]" in msg:
+            tag = "session"
+        elif "[INPUT]" in msg:
+            tag = "input"
+        elif "[BATCH]" in msg:
+            tag = "batch"
+
+        # Insert message with tag (one newline only)
+        if tag:
+            self.log_box.insert(tk.END, msg, tag)
+        else:
+            self.log_box.insert(tk.END, msg)
+
+        # Scroll to the latest line
         self.log_box.see(tk.END)
-        self.update_idletasks()
-    def log_threadsafe(self, msg): self.after(0, lambda: self.log(msg))
-    def clear_log(self): self.log_box.delete("1.0", tk.END)
+
+    def log_threadsafe(self, msg):
+        self.after(0, lambda: self.log(msg))
+
+    def clear_log(self):
+        self.log_box.delete("1.0", tk.END)
 
     def on_start(self):
         self.start_btn.config(state=tk.DISABLED)
         threading.Thread(target=self._run_processing_parallel_worker, daemon=True).start()
+
 
     def _run_processing_parallel_worker(self):
         try:
@@ -317,7 +383,8 @@ class GmailHybridApp(tk.Tk):
         self.log(f"[BATCH] Running up to {max_concurrent} accounts in parallel.")
 
         with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
-            futures = [executor.submit(self._process_one_account, email, enabled, self.log_threadsafe) for email in accounts]
+            log_fn = logger.get_logger(gui_callback=self.log_threadsafe, max_lines=5000)
+            futures = [executor.submit(self._process_one_account, email, enabled, log_fn) for email in accounts]
             for f in as_completed(futures):
                 try:
                     f.result()
@@ -411,4 +478,3 @@ if __name__ == "__main__":
     except Exception as e:
         print("Fatal error:", e)
         sys.exit(1)
-
